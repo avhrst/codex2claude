@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex2claude",
+  "version": "0.1.0-alpha.1",
+  "description": "Архітектура та рев'ю через живу нативну Claude Code сесію",
+  "repository": "https://github.com/avhrst/codex2claude",
+  "license": "MIT"
+}
