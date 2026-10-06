@@ -2,7 +2,7 @@
 
 Локальний міст: **Codex Desktop — виконавець**, **жива нативна Claude Code сесія — архітектор і рев'ювер**. Два STDIO MCP adapters, private Unix IPC, durable tasks і review точних байтів. Використовує звичайний Claude Code login користувача; Anthropic API/Agent SDK не застосовує.
 
-Experimental alpha. Native Channels handshake та architecture round trip перевірені 6 жовтня 2026 на Claude Code 2.1.291. `codex queue` probe фактично доставлено в адресований Desktop чат із новим turn. Реалізовано opt-in task-completion callback; його окремий end-to-end acknowledgment перевіряється в [verification](docs/verification.md). Desktop plugin install/tool loading ще потребує окремого підтвердження.
+Experimental alpha. Native Channels handshake та architecture round trip перевірені 6 жовтня 2026 на Claude Code 2.1.291. `codex queue` probe фактично доставлено в адресований Desktop чат із новим turn. Opt-in task-completion callback підтверджено: native Claude result → queue → цей самий Desktop чат → CLI acknowledgment після отримання → delivered. Evidence й межі — у [verification](docs/verification.md). Desktop plugin install/tool loading ще потребує окремого підтвердження.
 
 ## Запуск із checkout
 
