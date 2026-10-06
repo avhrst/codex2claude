@@ -319,6 +319,17 @@ test("real STDIO adapters and Unix IPC round trip (synthetic host, not native Cl
     {},
   );
   const tools = await claude.listTools();
+  const codexTools = (await codex.listTools()).tools;
+  assert.ok(codexTools.some((t) => t.name === "acknowledge_callback"));
+  assert.ok(
+    !codexTools.some((t) =>
+      ["configure_callback", "resolve_stopped_task"].includes(t.name),
+    ),
+  );
+  assert.ok(
+    codexTools.find((t) => t.name === "request_architecture").inputSchema
+      .properties.notify_on_completion,
+  );
   assert.ok(tools.tools.some((t) => t.name === "submit_result"));
   assert.ok(
     !tools.tools.find((t) => t.name === "accept_task").inputSchema.properties

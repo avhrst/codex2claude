@@ -30,6 +30,15 @@ import {
 } from "./protocol.js";
 import { atomicJson, readJson } from "./storage.js";
 import { snapshot } from "./snapshot.js";
+import {
+  callbackAckSchema,
+  callbackMessage,
+  callbackRecordSchema,
+  callbackRouteSchema,
+  queueCallback,
+  validateExecutable,
+  type CallbackRoute,
+} from "./callback.js";
 
 export const MAX_FRAME = 4 * 1024 * 1024;
 const now = () => new Date().toISOString();
@@ -67,6 +76,13 @@ export const schemas = {
     })
     .strict(),
   check_snapshot: z.object({ task_id: id }).strict(),
+  configure_callback: z.discriminatedUnion("mode", [
+    z
+      .object({ mode: z.literal("enable"), route: callbackRouteSchema })
+      .strict(),
+    z.object({ mode: z.literal("disable") }).strict(),
+  ]),
+  acknowledge_callback: callbackAckSchema,
   register: z.object({ lease: id }).strict(),
   poll: z.object({ lease: id }).strict(),
   channel_ready: z.object({ lease: id, nonce: id }).strict(),
@@ -93,6 +109,8 @@ const codexOps = new Set<Op>([
   "resolve_stopped_task",
   "check_snapshot",
   "bridge_status",
+  "configure_callback",
+  "acknowledge_callback",
 ]);
 const claudeOps = new Set<Op>([
   "register",
@@ -110,11 +128,14 @@ interface Store {
   version: 1;
   bindingHash: string;
   tasks: Record<string, Task>;
+  callbackRoute?: CallbackRoute;
 }
 export class Broker {
   tasks: Record<string, Task>;
   participant?: Participant;
   handshakeSent = false;
+  callbackRoute?: CallbackRoute;
+  callbackFlight?: Promise<void>;
   constructor(readonly config: Config) {
     const store = readJson<Store>(join(config.stateDir, "tasks.json"), {
       version: 1,
@@ -127,7 +148,22 @@ export class Broker {
     )
       fail("store_binding_mismatch");
     this.tasks = store.tasks;
+    if (store.callbackRoute)
+      this.callbackRoute = callbackRouteSchema.parse(store.callbackRoute);
     for (const [taskId, t] of Object.entries(this.tasks)) {
+      // Migrate initial local alpha receipts without persisting plaintext nonces.
+      const legacy = t.callback as
+        (Task["callback"] & { nonce?: unknown }) | undefined;
+      if (legacy && "nonce" in legacy) {
+        if (
+          !z.string().uuid().safeParse(legacy.nonce).success ||
+          legacy.nonceDigest
+        )
+          fail("store_integrity_error");
+        legacy.nonceDigest = digest(legacy.nonce);
+        legacy.legacyNonceExposed = true;
+        delete legacy.nonce;
+      }
       if (
         digest(t.binding) !== store.bindingHash ||
         t.snapshot.id !==
@@ -139,6 +175,29 @@ export class Broker {
           })
       )
         fail("store_integrity_error");
+      if (
+        t.callbackRoute &&
+        (!callbackRouteSchema.safeParse(t.callbackRoute).success ||
+          t.request.notify_on_completion !== true ||
+          t.request.originating_chat !== t.callbackRoute.threadId)
+      )
+        fail("store_integrity_error");
+      if (
+        t.callback &&
+        (!callbackRecordSchema.safeParse(t.callback).success ||
+          !t.callbackRoute ||
+          t.state !== "completed" ||
+          !t.result ||
+          t.result.late ||
+          t.callback.resultDigest !== t.result.digest ||
+          (!["pending", "suppressed"].includes(t.callback.state) &&
+            !t.callback.nonceDigest) ||
+          (t.callback.state === "queued" &&
+            (!t.callback.messageId || !t.callback.queuedAt)) ||
+          (t.callback.state === "delivered" && !t.callback.deliveredAt))
+      )
+        fail("store_integrity_error");
+      if (t.callback?.state === "sending") t.callback.state = "uncertain";
       if (
         t.contractVersion !== 1 ||
         t.id !== taskId ||
@@ -195,6 +254,7 @@ export class Broker {
       version: 1,
       bindingHash: digest(publicBinding(this.config)),
       tasks: this.tasks,
+      callbackRoute: this.callbackRoute,
     });
   }
   transition(t: Task, state: State, detail: string) {
@@ -210,6 +270,8 @@ export class Broker {
     return this.tasks[taskId] ?? fail("task_not_found");
   }
   receipt(t: Task) {
+    // The acknowledgment nonce is carried only by the actual queued message.
+    const { nonceDigest: _nonceDigest, ...callbackReceipt } = t.callback ?? {};
     return {
       task_id: t.id,
       snapshot_id: t.snapshot.id,
@@ -226,6 +288,9 @@ export class Broker {
       cancel_request: t.cancelRequest,
       progress: t.progress,
       operator_stopped: t.operatorStopped,
+      callback: t.callback
+        ? { ...callbackReceipt, thread_id: t.callbackRoute!.threadId }
+        : undefined,
       human_action: ["needs_human", "delivery_uncertain"].includes(t.state)
         ? t.humanAction
         : undefined,
@@ -322,7 +387,13 @@ export class Broker {
               lease: this.participant.lease,
             }
           : null,
-        callback: "manual_resume_or_bounded_mcp_wait",
+        callback: {
+          enabled: !!this.callbackRoute,
+          thread_id: this.callbackRoute?.threadId,
+          transport: "codex_queue",
+          scope: "opt_in_timely_completion_only",
+          acknowledgment_required: true,
+        },
         tasks: Object.values(this.tasks).map((t) => ({
           task_id: t.id,
           state: t.state,
@@ -331,6 +402,40 @@ export class Broker {
           !!this.participant?.handshake &&
           Date.now() - this.participant.lastHeartbeat <= 10000,
       };
+    // Configuration is CLI-only; model requests may opt in to an already bound route.
+    if (op === "configure_callback") {
+      if (this.callbackFlight) fail("callback_in_flight");
+      if (args.mode === "enable") {
+        validateExecutable(args.route);
+        this.callbackRoute = args.route;
+      } else delete this.callbackRoute;
+      this.save();
+      return {
+        enabled: !!this.callbackRoute,
+        thread_id: this.callbackRoute?.threadId,
+      };
+    }
+    if (op === "acknowledge_callback") {
+      const t = this.task(args.task_id),
+        cb = t.callback;
+      if (
+        !cb ||
+        t.snapshot.id !== args.snapshot_id ||
+        t.callbackRoute?.threadId !== args.thread_id ||
+        cb.resultDigest !== args.result_digest ||
+        cb.nonceDigest !== digest(args.nonce)
+      )
+        fail("callback_correlation_mismatch");
+      if (!["sending", "queued", "uncertain", "delivered"].includes(cb.state))
+        fail("callback_not_sent");
+      if (cb.legacyNonceExposed) fail("legacy_callback_requires_manual_resume");
+      if (cb.state !== "delivered") {
+        cb.state = "delivered";
+        cb.deliveredAt = now();
+        this.save();
+      }
+      return this.receipt(t);
+    }
     if (op === "request_architecture" || op === "request_review") {
       const kind = op === "request_review" ? "review" : "architecture";
       const requestHash = digest({ kind, args });
@@ -341,6 +446,12 @@ export class Broker {
         if (prior.requestHash !== requestHash) fail("idempotency_conflict");
         return this.receipt(prior);
       }
+      if (
+        args.notify_on_completion &&
+        (!this.callbackRoute ||
+          args.originating_chat !== this.callbackRoute.threadId)
+      )
+        fail("callback_route_not_enabled");
       if (args.parent_task_id) {
         const parent = this.task(args.parent_task_id);
         if (!terminal.has(parent.state)) fail("parent_not_terminal");
@@ -378,6 +489,9 @@ export class Broker {
         deadline: Date.now() + args.deadline_seconds * 1000,
         deliveryAttempts: 0,
         events: [],
+        ...(args.notify_on_completion
+          ? { callbackRoute: { ...this.callbackRoute! } }
+          : {}),
       };
       this.transition(t, "queued", "Durable queue receipt only.");
       this.tasks[t.id] = t;
@@ -677,6 +791,12 @@ export class Broker {
           state: t.state,
           detail: "Late result retained; no timely completion claimed.",
         });
+      if (!late && t.callbackRoute)
+        t.callback = {
+          resultDigest: hash,
+          state: "pending",
+          plannedAt: now(),
+        };
       this.save();
       return this.receipt(t);
     }
@@ -702,6 +822,63 @@ export class Broker {
         "Written to transport; native processing still unconfirmed.",
       );
     this.save();
+  }
+  dispatchCallbacks(sender = queueCallback): Promise<void> {
+    if (this.callbackFlight) return this.callbackFlight;
+    const t = Object.values(this.tasks).find(
+      (t) => t.callback?.state === "pending",
+    );
+    if (!t) return Promise.resolve();
+    this.callbackFlight = Promise.resolve()
+      .then(async () => {
+        const cb = t.callback!;
+        // An RPC acknowledgment may mutate this state while queue CLI is awaited.
+        const delivered = () => cb.state === "delivered";
+        if (
+          !this.callbackRoute ||
+          digest(this.callbackRoute) !== digest(t.callbackRoute)
+        ) {
+          cb.state = "suppressed";
+          try {
+            this.save();
+          } catch {
+            cb.state = "pending";
+            throw new Error("callback_store_failed");
+          }
+          return;
+        }
+        const nonce = randomUUID();
+        delete cb.legacyNonceExposed; // Unsent legacy pending record gets a fresh nonce.
+        cb.nonceDigest = digest(nonce);
+        cb.state = "sending";
+        cb.attemptedAt = now();
+        try {
+          this.save();
+        } catch {
+          // No sender has run; retrying persistence is safe, never replaying delivery.
+          cb.state = "pending";
+          delete cb.nonceDigest;
+          delete cb.attemptedAt;
+          throw new Error("callback_store_failed");
+        }
+        try {
+          const messageId = await sender(
+            t.callbackRoute!,
+            callbackMessage(t, nonce),
+            this.config.root,
+          );
+          if (!delivered()) cb.state = "queued";
+          cb.messageId = messageId;
+          cb.queuedAt = now();
+        } catch {
+          if (!delivered()) cb.state = "uncertain";
+        }
+        this.save();
+      })
+      .finally(() => {
+        this.callbackFlight = undefined;
+      });
+    return this.callbackFlight;
   }
 }
 
@@ -800,11 +977,15 @@ export async function startBroker(config: Config) {
     const timer = setInterval(() => {
       broker.expire();
       broker.detectOffline();
+      void broker
+        .dispatchCallbacks()
+        .catch(() => process.stderr.write("callback_store_failed\n"));
     }, 1000);
     timer.unref();
     const stop = async () => {
       clearInterval(timer);
       await new Promise<void>((res) => server!.close(() => res()));
+      await broker.callbackFlight?.catch(() => {});
       if (existsSync(config.socket)) unlinkSync(config.socket);
       if (existsSync(lock)) unlinkSync(lock);
     };

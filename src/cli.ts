@@ -104,7 +104,8 @@ async function main() {
       native_integration: bridge?.ready
         ? "Native nonce handshake confirmed. Task completion requires separate acceptance/result receipts."
         : "Native handshake not confirmed in this execution environment. Sandbox/Keychain access can affect auth status.",
-      desktop_callback: "No automatic wakeup implemented.",
+      desktop_callback:
+        "Opt-in codex queue completion notification; queued receipt is not delivery. Actual chat must acknowledge the exact envelope.",
     });
     return;
   }
@@ -132,7 +133,17 @@ async function main() {
     const b = await startBroker(loadConfig(root));
     process.stderr.write("codex2claude broker listening (private local IPC)\n");
     for (const signal of ["SIGTERM", "SIGINT"] as const)
-      process.once(signal, () => void b.stop().then(() => process.exit(0)));
+      process.once(
+        signal,
+        () =>
+          void b
+            .stop()
+            .then(() => process.exit(0))
+            .catch(() => {
+              process.stderr.write("broker_shutdown_failed\n");
+              process.exit(1);
+            }),
+      );
     return;
   }
   if (command === "mcp") {
@@ -175,6 +186,38 @@ async function main() {
         option("--task") ? { task_id: option("--task") } : {},
       ),
     );
+    return;
+  }
+  if (command === "callback") {
+    const action = argv[1];
+    const c = loadConfig(root);
+    if (action === "enable" || action === "disable") {
+      output(
+        await rpc(
+          c,
+          "codex",
+          "configure_callback",
+          action === "enable"
+            ? {
+                mode: "enable",
+                route: {
+                  threadId: option("--thread"),
+                  codexBin: option("--codex-bin"),
+                },
+              }
+            : { mode: "disable" },
+        ),
+      );
+    } else if (action === "acknowledge" && option("--input")) {
+      output(
+        await rpc(
+          c,
+          "codex",
+          "acknowledge_callback",
+          JSON.parse(readFileSync(resolve(option("--input")!), "utf8")),
+        ),
+      );
+    } else throw new Error("callback_requires_enable_disable_or_acknowledge");
     return;
   }
   if (command === "result") {
@@ -276,6 +319,9 @@ async function main() {
       "claude-session",
       "spike",
       "status [--task ID]",
+      "callback enable --thread EXACT_UUID --codex-bin ABSOLUTE_PATH (explicit chat authorization required)",
+      "callback disable",
+      "callback acknowledge --input ENVELOPE_ACK.json (after actual chat delivery only)",
       "result --task ID",
       "request architecture|review --input FILE.json",
       "wait --task ID [--seconds 20]",

@@ -92,6 +92,31 @@ node dist/cli.js cancel --task TASK_ID --reason "Задача більше не 
 
 `task_result` і `wait_for_task` повертають payload у `result` лише для своєчасного `completed`. Пізній/скасований результат доступний як `late_result`; він не підтверджує completion чи approval. Додатково перевіряти `state`, `result_receipt.late` та snapshot applicability.
 
+## Completion callback
+
+Вимкнений за замовчуванням. Спочатку погодити exact UUID вихідного Desktop чату; не визначати його з private inbox/auth files і не використовувати нечітку назву. На host `codex queue --help` має підтримувати адресацію. У bound project, із запущеним broker:
+
+```sh
+node dist/cli.js callback enable --thread EXACT_CHAT_UUID --codex-bin /absolute/path/to/codex
+```
+
+Ця команда змінює тільки private bridge store, не global Codex config. Absolute binary має бути executable; після оновлення binary/path явно повторити enable з актуальним шляхом. Route є project/worktree/session-bound. Зміна binary path suppresses ще pending callbacks зі старим route; не переадресовує їх автоматично. Він не доводить, що заданий чат доступний: потрібен реальний probe/доставлений callback.
+
+До нового request JSON додати `originating_chat` з тим самим UUID та `notify_on_completion:true`. Без цих полів callback не надсилається. Невідомий/інший route відхиляється до capture/queue. Маршрут фіксується в задачі; зміна config не переадресовує стару задачу в інший чат.
+
+Після своєчасного Claude result broker надсилає bounded envelope через CLI queue. Якщо Codex ще працює над turn, повідомлення може чекати його завершення. `task_status.callback.state=queued` означає лише queue receipt; `delivered` потребує actual chat acknowledgment. Повідомлення не містить source/result payload і не дозволяє commit/push/іншу нову дію.
+
+Після фактичного отримання повідомлення Codex перевіряє project/bridge binding, `task_result`: `completed`, `late=false`, matching result digest; для review — `check_snapshot` перед використанням. Далі викликає MCP `acknowledge_callback` із точним `acknowledgment` object. Якщо native MCP tools у чаті ще недоступні, той самий object з incoming envelope зберегти як JSON і виконати:
+
+```sh
+node dist/cli.js callback acknowledge --input acknowledgment.json
+node dist/cli.js status --task TASK_ID
+```
+
+Ack містить `task_id`, `snapshot_id`, `thread_id`, `result_digest`, `nonce`. Не створювати його на підставі store/status до отримання повідомлення. Nonce і його hash не повертаються в status/result/wait receipts; store має тільки hash. Same-user процес усе ще може спостерігати argv або редагувати store; ack не є окремою Desktop authentication.
+
+`callback disable` вимикає нові notifications та suppresses pending callback при наступному dispatch; already queued повідомлення не відкликається. Під час sending disable відхиляється. `uncertain` після crash/timeout/помилки не повторювати: вручну відновити чат і прочитати result. Якщо callback фактично прийде пізніше, його exact ack може закрити uncertainty. Для старого exposed alpha receipt зі legacyNonceExposed=true ack відхиляється (legacy_callback_requires_manual_resume); читати result вручну. Pending legacy при dispatch отримує свіжий nonce. Автоматичні notifications для failures/expired/cancel/late та callback retry не реалізовані.
+
 ## Локальні evidence scripts
 
 `node scripts/live-spike.mjs` використовує справжній Codex MCP adapter та живий native channel для синтетичного architecture request. `--review` перевіряє fixture review. Це MCP client із Desktop shell, не доказ установленого Desktop plugin. Raw receipts зберігаються в private `.codex2claude/evidence/`.

@@ -2,7 +2,7 @@
 
 Локальний міст: **Codex Desktop — виконавець**, **жива нативна Claude Code сесія — архітектор і рев'ювер**. Два STDIO MCP adapters, private Unix IPC, durable tasks і review точних байтів. Використовує звичайний Claude Code login користувача; Anthropic API/Agent SDK не застосовує.
 
-Experimental alpha. Native Channels handshake та architecture round trip перевірені 6 жовтня 2026 на Claude Code 2.1.291. Desktop plugin install/tool loading перевіряється окремо; автоматичне пробудження чату після завершення turn не реалізоване. Повний поточний статус — [verification](docs/verification.md).
+Experimental alpha. Native Channels handshake та architecture round trip перевірені 6 жовтня 2026 на Claude Code 2.1.291. `codex queue` probe фактично доставлено в адресований Desktop чат із новим turn. Реалізовано opt-in task-completion callback; його окремий end-to-end acknowledgment перевіряється в [verification](docs/verification.md). Desktop plugin install/tool loading ще потребує окремого підтвердження.
 
 ## Запуск із checkout
 
@@ -43,7 +43,7 @@ npm test
 
 ## Робочий workflow
 
-В установленому plugin Codex використовує `claude-architecture` або `claude-review`: request → bounded wait/status → result. Якщо turn уже завершився, користувач відновлює чат і просить отримати результат. Review applicability перевіряється `check_snapshot`; змінені bytes потребують нового review.
+В установленому plugin Codex використовує `claude-architecture` або `claude-review`: request → bounded wait/status → result. Для завершеного turn можна явно увімкнути callback у точний UUID чату й додати `originating_chat` та `notify_on_completion:true` до запиту; порядок — у [setup](docs/setup.md#completion-callback). За замовчуванням користувач відновлює чат вручну. Review applicability перевіряється `check_snapshot`; змінені bytes потребують нового review.
 
 Architecture/review за замовчуванням не дозволяють Claude змінювати файли чи виконувати тести. Prompt не є sandbox, native permissions зберігаються. Неточна доставка потребує явного reconciliation; `cancel_requested` не означає примусову зупинку.
 

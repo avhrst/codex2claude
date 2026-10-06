@@ -36,6 +36,7 @@ export const requestSchema = z
     validation: z.array(text).max(30).default([]),
     parent_task_id: id.optional(),
     originating_chat: id.optional(),
+    notify_on_completion: z.boolean().optional(),
     deadline_seconds: z.number().int().min(30).max(86400).default(1800),
   })
   .strict();
@@ -149,6 +150,24 @@ export interface Task {
   cancelNotified?: string;
   progress?: { at: string; message: string };
   operatorStopped?: { at: string; lease: string; reason: string };
+  callbackRoute?: { threadId: string; codexBin: string };
+  callback?: {
+    nonceDigest?: string;
+    legacyNonceExposed?: true;
+    resultDigest: string;
+    state:
+      | "pending"
+      | "sending"
+      | "queued"
+      | "delivered"
+      | "uncertain"
+      | "suppressed";
+    plannedAt: string;
+    attemptedAt?: string;
+    messageId?: string;
+    queuedAt?: string;
+    deliveredAt?: string;
+  };
   events: { at: string; state: State; detail: string }[];
 }
 export interface Participant {

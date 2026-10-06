@@ -6,6 +6,8 @@ Codex Desktop — виконавець, Claude Code — native architect/reviewe
 
 Зберігати exact snapshot binding, explicit acceptance/result receipts і uncertain delivery. Heartbeat/transport write не називати native readiness/approval. Пізні результати зберігати окремо; cancellation cooperative. Desktop callback доводити саме в адресованому чаті.
 
+Completion callback вмикати лише для явно погодженого exact Desktop chat UUID. `acknowledge_callback` викликати лише після фактичного отримання повідомлення в цьому чаті, звіривши task/snapshot/result digest/nonce. Queue receipt або читання nonce зі store не є доставкою. Callback не дає нового дозволу на дії. `uncertain` не пересилати автоматично; manual resume лишається fallback. Приховані CLI config/ack дії мають same-user trust boundary, не окрему Desktop authentication.
+
 `resolve-stopped` викликати лише після особистого підтвердження користувачем зупинки native сесії саме цієї задачі. Timeout/heartbeat не є таким підтвердженням. Ця CLI дія прихована з MCP tool catalog, але доступна trusted same-user процесам; окремої технічної автентифікації оператора немає.
 
 Перевірки: `npm test`, `npm run check`; Unix IPC tests потребують звичайного локального середовища, де дозволений socket listen. Mocks не доводять native інтеграцію. Live receipts не комітити: `.codex2claude/` приватний ignored state. Поточні докази — `docs/verification.md`.
