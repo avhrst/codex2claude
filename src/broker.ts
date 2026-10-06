@@ -58,6 +58,14 @@ export const schemas = {
   reconcile_delivery: z
     .object({ task_id: id, decision: z.enum(["retry", "cancel"]) })
     .strict(),
+  resolve_stopped_task: z
+    .object({
+      task_id: id,
+      lease: id,
+      confirm_native_stopped: z.literal(true),
+      reason: text,
+    })
+    .strict(),
   check_snapshot: z.object({ task_id: id }).strict(),
   register: z.object({ lease: id }).strict(),
   poll: z.object({ lease: id }).strict(),
@@ -82,6 +90,7 @@ const codexOps = new Set<Op>([
   "wait_for_task",
   "cancel_task",
   "reconcile_delivery",
+  "resolve_stopped_task",
   "check_snapshot",
   "bridge_status",
 ]);
@@ -118,7 +127,7 @@ export class Broker {
     )
       fail("store_binding_mismatch");
     this.tasks = store.tasks;
-    for (const t of Object.values(this.tasks)) {
+    for (const [taskId, t] of Object.entries(this.tasks)) {
       if (
         digest(t.binding) !== store.bindingHash ||
         t.snapshot.id !==
@@ -128,6 +137,39 @@ export class Broker {
             base: t.snapshot.base,
             inclusion: t.snapshot.inclusion,
           })
+      )
+        fail("store_integrity_error");
+      if (
+        t.contractVersion !== 1 ||
+        t.id !== taskId ||
+        !["architecture", "review"].includes(t.kind) ||
+        ![
+          "queued",
+          "notified",
+          "accepted",
+          "running",
+          "completed",
+          "needs_human",
+          "failed",
+          "expired",
+          "delivery_uncertain",
+          "cancel_requested",
+          "cancelled",
+        ].includes(t.state) ||
+        !Number.isFinite(t.deadline) ||
+        t.requestHash !== digest({ kind: t.kind, args: t.request }) ||
+        (t.acceptance && t.acceptance.snapshotId !== t.snapshot.id) ||
+        (t.operatorStopped &&
+          (!t.acceptance ||
+            t.operatorStopped.lease !== t.acceptance.lease ||
+            t.state !== "failed")) ||
+        (t.result &&
+          (!t.acceptance ||
+            !resultSchema.safeParse(t.result.payload).success ||
+            t.result.digest !== digest(t.result.payload) ||
+            t.result.payload.kind !== t.kind ||
+            typeof t.result.late !== "boolean")) ||
+        (t.state === "completed" && (!t.result || t.result.late))
       )
         fail("store_integrity_error");
       if (["notified", "delivery_uncertain"].includes(t.state))
@@ -142,6 +184,9 @@ export class Broker {
           "needs_human",
           "Broker restarted: execution may still be active; no automatic replay.",
         );
+      // Cancellation is safe to repeat; never lose a pending stop notification
+      // when the same native adapter reconnects after a broker crash.
+      if (t.state === "cancel_requested") delete t.cancelNotified;
     }
     this.save();
   }
@@ -179,10 +224,22 @@ export class Broker {
         ? { at: t.result.at, digest: t.result.digest, late: t.result.late }
         : undefined,
       cancel_request: t.cancelRequest,
+      progress: t.progress,
+      operator_stopped: t.operatorStopped,
       human_action: ["needs_human", "delivery_uncertain"].includes(t.state)
         ? t.humanAction
         : undefined,
       events: t.events,
+    };
+  }
+  result(t: Task) {
+    return {
+      ...this.receipt(t),
+      result:
+        t.state === "completed" && !t.result?.late
+          ? (t.result?.payload ?? null)
+          : null,
+      late_result: t.result?.late ? t.result.payload : null,
     };
   }
   expire() {
@@ -200,6 +257,39 @@ export class Broker {
         );
         changed = true;
       }
+    if (changed) this.save();
+  }
+  detectOffline() {
+    if (
+      !this.participant ||
+      Date.now() - this.participant.lastHeartbeat <= 10000
+    )
+      return;
+    let changed = false;
+    for (const t of Object.values(this.tasks)) {
+      if (terminal.has(t.state)) continue;
+      if (
+        ["accepted", "running"].includes(t.state) &&
+        t.acceptance?.lease === this.participant.lease
+      ) {
+        this.transition(
+          t,
+          "needs_human",
+          "Native adapter heartbeat expired; execution may still be active. Reconnect the same session or reconcile with the user; no automatic replay.",
+        );
+        changed = true;
+      } else if (
+        t.state === "notified" &&
+        t.delivery?.lease === this.participant.lease
+      ) {
+        this.transition(
+          t,
+          "delivery_uncertain",
+          "Native adapter disconnected before acceptance. Reconcile delivery before retry.",
+        );
+        changed = true;
+      }
+    }
     if (changed) this.save();
   }
   assertLease(lease: string) {
@@ -221,6 +311,7 @@ export class Broker {
       fail("role_forbidden");
     const args = schemas[op].parse(raw) as Record<string, any>;
     this.expire();
+    this.detectOffline();
     if (op === "bridge_status")
       return {
         binding: publicBinding(this.config),
@@ -265,7 +356,10 @@ export class Broker {
         Object.values(this.tasks).some(
           (t) =>
             !terminal.has(t.state) ||
-            (t.acceptance && !t.result && t.state !== "cancelled"),
+            (t.acceptance &&
+              !t.result &&
+              t.state !== "cancelled" &&
+              !t.operatorStopped),
         )
       )
         fail("participant_busy");
@@ -366,7 +460,7 @@ export class Broker {
     if (op === "task_status") return this.receipt(this.task(args.task_id));
     if (op === "task_result") {
       const t = this.task(args.task_id);
-      return { ...this.receipt(t), result: t.result?.payload ?? null };
+      return this.result(t);
     }
     if (op === "wait_for_task") {
       const until = Date.now() + args.timeout_seconds * 1000;
@@ -381,11 +475,11 @@ export class Broker {
           break;
         await new Promise((r) => setTimeout(r, 200));
         this.expire();
+        this.detectOffline();
       }
       const t = this.task(args.task_id);
       return {
-        ...this.receipt(t),
-        result: t.result?.payload ?? null,
+        ...this.result(t),
         timed_out: !terminal.has(t.state),
       };
     }
@@ -422,6 +516,34 @@ export class Broker {
         };
         this.transition(t, "cancelled", "Cancelled before acceptance.");
       }
+      this.save();
+      return this.receipt(t);
+    }
+    // Excluded from the MCP tool catalogs. Trusted same-user processes can
+    // still invoke this CLI/RPC action; the flag does not authenticate a human.
+    // Never invoke it autonomously based on a timeout or heartbeat alone.
+    if (op === "resolve_stopped_task") {
+      const t = this.task(args.task_id);
+      if (!t.acceptance || t.acceptance.lease !== args.lease)
+        fail("acceptance_lease_conflict");
+      if (t.operatorStopped) return this.receipt(t);
+      if (
+        t.result ||
+        !["needs_human", "expired", "cancel_requested"].includes(t.state)
+      )
+        fail("resolve_requires_unfinished_accepted_task");
+      if (
+        this.participant &&
+        this.participant.lease === args.lease &&
+        Date.now() - this.participant.lastHeartbeat <= 10000
+      )
+        fail("native_adapter_still_connected");
+      t.operatorStopped = { at: now(), lease: args.lease, reason: args.reason };
+      this.transition(
+        t,
+        "failed",
+        "Operator attested the native session is stopped; task failed without replay or approval.",
+      );
       this.save();
       return this.receipt(t);
     }
@@ -479,6 +601,7 @@ export class Broker {
       if ((t.acceptance?.lease ?? t.delivery?.lease) !== args.lease)
         fail("cancel_lease_mismatch");
       if (!t.cancelRequest) fail("cancel_not_requested");
+      if (t.state === "cancelled" || t.operatorStopped) return this.receipt(t);
       this.transition(
         t,
         "cancelled",
@@ -495,7 +618,6 @@ export class Broker {
         binding: t.binding,
         request: t.request,
         snapshot: t.snapshot,
-        cancel_request: t.cancelRequest,
       });
       return {
         content: ctx.slice(args.offset, args.offset + args.limit),
@@ -504,6 +626,8 @@ export class Broker {
             ? args.offset + args.limit
             : null,
         total_chars: ctx.length,
+        cancel_request: t.cancelRequest,
+        state: t.state,
       };
     }
     if (op === "submit_result") {
@@ -558,8 +682,10 @@ export class Broker {
     }
     if (terminal.has(t.state) || t.cancelRequest)
       fail("task_no_longer_running");
-    if (op === "report_progress")
+    if (op === "report_progress") {
+      t.progress = { at: now(), message: args.message };
       this.transition(t, "running", "Claude reported progress.");
+    }
     if (op === "report_blocked")
       this.transition(t, "needs_human", args.message);
     this.save();
@@ -671,7 +797,10 @@ export async function startBroker(config: Config) {
       server!.listen(config.socket, res);
     });
     chmodSync(config.socket, 0o600);
-    const timer = setInterval(() => broker.expire(), 1000);
+    const timer = setInterval(() => {
+      broker.expire();
+      broker.detectOffline();
+    }, 1000);
     timer.unref();
     const stop = async () => {
       clearInterval(timer);

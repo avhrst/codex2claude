@@ -3,6 +3,7 @@ import {
   existsSync,
   fsyncSync,
   lstatSync,
+  linkSync,
   openSync,
   readFileSync,
   renameSync,
@@ -13,15 +14,24 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export function atomicJson(path: string, value: unknown) {
+  atomicText(path, JSON.stringify(value));
+}
+export function atomicText(path: string, content: string, replace = true) {
   const tmp = path + "." + randomUUID() + ".tmp";
   let fd: number | undefined;
   try {
     fd = openSync(tmp, "wx", 0o600);
-    writeFileSync(fd, JSON.stringify(value));
+    writeFileSync(fd, content);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    renameSync(tmp, path);
+    if (replace) renameSync(tmp, path);
+    else {
+      // Publish complete bytes atomically, refusing an existing destination even
+      // if another writer created it after the caller's existence check.
+      linkSync(tmp, path);
+      unlinkSync(tmp);
+    }
     const dir = openSync(dirname(path), "r");
     try {
       fsyncSync(dir);
@@ -34,8 +44,13 @@ export function atomicJson(path: string, value: unknown) {
   }
 }
 export function readJson<T>(path: string, fallback: T): T {
-  if (!existsSync(path)) return fallback;
-  const st = lstatSync(path);
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+    throw error;
+  }
   if (
     !st.isFile() ||
     st.isSymbolicLink() ||

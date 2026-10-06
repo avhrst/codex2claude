@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startAdapter } from "./adapters.js";
@@ -15,6 +9,7 @@ import { initConfig, loadConfig, publicBinding } from "./config.js";
 import { rpc } from "./ipc.js";
 import { VERSION } from "./protocol.js";
 import { atomicJson } from "./storage.js";
+import { prepareCodex } from "./onboarding.js";
 
 const argv = process.argv.slice(2);
 const option = (key: string) => {
@@ -115,33 +110,21 @@ async function main() {
   }
   if (command === "prepare-codex") {
     const c = loadConfig(root);
-    const catalog = {
-      name: "codex2claude-dev",
-      interface: { displayName: "codex2claude — локальна розробка" },
-      plugins: [
-        {
-          name: "codex2claude",
-          source: { source: "local", path: "./.codex2claude/plugin" },
-          policy: { installation: "AVAILABLE", authentication: "ON_USE" },
-          category: "Productivity",
-        },
-      ],
-    };
-    const dir = join(c.root, ".agents/plugins");
-    mkdirSync(dir, { recursive: true });
-    const path = join(dir, "marketplace.json");
-    if (
-      existsSync(path) &&
-      JSON.stringify(JSON.parse(readFileSync(path, "utf8"))) !==
-        JSON.stringify(catalog)
-    )
-      throw new Error("existing_marketplace_conflict");
-    atomicJson(path, catalog);
+    const refresh = argv.includes("--refresh-direct-mcp");
+    const prepared = prepareCodex(
+      c,
+      cli,
+      argv.includes("--direct-mcp") || refresh,
+      process.execPath,
+      refresh,
+    );
     output({
-      marketplace: path,
+      ...prepared,
       plugin: join(c.stateDir, "plugin"),
-      scope: "repo catalog only; no global config modified",
-      next: "Install codex2claude from codex2claude-dev in Codex Plugins UI. Installation is a separate user action.",
+      scope: "project only; no global config modified",
+      next: prepared.project_mcp_config
+        ? "Reload MCP servers or start a new project chat, then call the native codex2claude bridge_status tool. Avoid simultaneously enabling the plugin's same MCP server."
+        : "Install codex2claude from codex2claude-dev in Codex Plugins UI. Installation is a separate user action.",
     });
     return;
   }
@@ -202,6 +185,57 @@ async function main() {
     );
     return;
   }
+  if (command === "request") {
+    const kind = argv[1];
+    const input = option("--input");
+    if (!kind || !["architecture", "review"].includes(kind) || !input)
+      throw new Error("request_requires_kind_and_input");
+    const args = JSON.parse(readFileSync(resolve(input), "utf8"));
+    output(
+      await rpc(
+        loadConfig(root),
+        "codex",
+        kind === "review" ? "request_review" : "request_architecture",
+        args,
+      ),
+    );
+    return;
+  }
+  if (command === "wait" || command === "cancel" || command === "check") {
+    output(
+      await rpc(
+        loadConfig(root),
+        "codex",
+        command === "wait"
+          ? "wait_for_task"
+          : command === "cancel"
+            ? "cancel_task"
+            : "check_snapshot",
+        {
+          task_id: option("--task"),
+          ...(command === "wait"
+            ? { timeout_seconds: Number(option("--seconds") ?? 20) }
+            : command === "cancel"
+              ? { reason: option("--reason") }
+              : {}),
+        },
+      ),
+    );
+    return;
+  }
+  if (command === "resolve-stopped") {
+    if (!argv.includes("--confirm-native-stopped"))
+      throw new Error("native_stop_confirmation_required");
+    output(
+      await rpc(loadConfig(root), "codex", "resolve_stopped_task", {
+        task_id: option("--task"),
+        lease: option("--lease"),
+        confirm_native_stopped: true,
+        reason: option("--reason"),
+      }),
+    );
+    return;
+  }
   if (command === "spike") {
     output(
       await rpc(loadConfig(root), "codex", "request_architecture", {
@@ -234,7 +268,7 @@ async function main() {
     version: VERSION,
     commands: [
       "init",
-      "prepare-codex",
+      "prepare-codex [--direct-mcp | --refresh-direct-mcp]",
       "doctor",
       "broker",
       "mcp codex",
@@ -243,7 +277,12 @@ async function main() {
       "spike",
       "status [--task ID]",
       "result --task ID",
+      "request architecture|review --input FILE.json",
+      "wait --task ID [--seconds 20]",
+      "cancel --task ID --reason MESSAGE",
+      "check --task ID",
       "reconcile --task ID --decision retry|cancel",
+      "resolve-stopped --task ID --lease ACCEPTED_LEASE --confirm-native-stopped --reason MESSAGE (explicit human attestation required)",
     ],
     project: "--project PATH (default cwd)",
   });

@@ -19,7 +19,7 @@ const descriptions: Partial<Record<Op, string>> = {
   task_status:
     "Read task state, delivery and acceptance receipts, blocker and deadline.",
   task_result:
-    "Read Claude result and late flag. Before using review, call check_snapshot.",
+    "Read a timely completed Claude result. Late payloads are returned separately in late_result and do not imply completion. Before using review, call check_snapshot.",
   wait_for_task:
     "Wait at most 25 seconds; no native Desktop wakeup is guaranteed. Resume manually after the turn ends.",
   cancel_task:

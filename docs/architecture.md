@@ -17,6 +17,8 @@ State directory `.codex2claude` має 0700; config/store 0600. Socket — 0600 
 
 `tasks.json` записується через exclusive temp → fsync → rename → directory fsync. Broker є єдиним writer; lock забороняє другий процес. Записи містять bounded request, immutable current/base UTF-8 bytes, hashes, deadline, receipts та events. stdout adapter — тільки MCP, stderr — codes без request/source content. Raw tool errors і transcript не логуються.
 
+Canonical hashes сортують ключі ordinal UTF-16, без залежності від process locale. Перед заміною comparator перевірено 13 binding/request/snapshot/result digests чотирьох наявних native tasks: усі збігаються, історичні receipts збережені. Integrity checks виявляють випадкове пошкодження; same-user процес може перезаписати дані й hashes, це не tamper-proof storage.
+
 ## Readiness та доставка
 
 Adapter heartbeat доводить тільки наявність adapter. Broker надсилає одноразовий випадковий nonce як Channels event. Claude має викликати `channel_ready` з цим nonce; тільки тоді broker пропонує задачі.
@@ -25,7 +27,11 @@ Durable task: `queued`. До notification broker атомарно ставить
 
 Crash після підготовки доставки залишає uncertainty. Після restart немає automatic replay: `notified` стає `delivery_uncertain`; accepted/running — `needs_human`. Новий adapter lease не успадковує acceptance. `reconcile_delivery` дозволяє явний retry тієї самої unaccepted задачі максимум тричі або cancel. Accepted execution після втрати native session у MVP потребує перевірки людиною; автоматичного rebind немає.
 
-Deadline → `expired`, але не доводить зупинки accepted turn. Slot утримується до result або підтвердженого cancel. Скасування active/delivered task → `cancel_requested`; окрема подія просить Claude припинити роботу. `acknowledge_cancel` → `cancelled`. Native turn не вбивається. Result після deadline/cancel зберігається з `late=true` без своєчасного completed. `wait_for_task` обмежений 25 секундами.
+Після 10 секунд без heartbeat ці самі uncertainty states фіксуються без рестарту broker. Progress зберігається окремо. Людина після зупинки native session може виконати CLI `resolve-stopped` із точним accepted lease і підтвердженням: задача стає `failed`, зберігає operator receipt та звільняє слот. Connected adapter не допускає цього переходу. Це attestation людини, не примусове завершення процесу. Дія виключена з MCP tool catalog, але trusted same-user shell/IPC процеси можуть її викликати; окремої operator authentication немає.
+
+Deadline → `expired`, але не доводить зупинки accepted turn. Slot утримується до result, підтвердженого cancel або operator stopped receipt. Скасування active/delivered task → `cancel_requested`; окрема подія просить Claude припинити роботу. `acknowledge_cancel` → `cancelled`, повтор idempotent. Pending cancellation повторюється після broker restart; це не повтор задачі. Native turn не вбивається. Result після deadline/cancel/operator failure зберігається з `late=true` без своєчасного completed. `wait_for_task` обмежений 25 секундами.
+
+Пізній cancel acknowledgment після operator failure залишає `failed`. `task_result`/`wait_for_task` видають несвоєчасний payload у `late_result`, а `result` заповнюють лише для своєчасного `completed`.
 
 ## Snapshot review
 
@@ -33,8 +39,10 @@ Deadline → `expired`, але не доводить зупинки accepted tur
 
 Ліміти: 100 файлів, 128 KiB/file (current і base), 1 MiB сумарно; context pages до 16000 символів. Symlink components, binary/invalid UTF-8, traversal, абсолютні paths та відомі auth/secret paths відхиляються. Allowlist шляхів не гарантує відсутності секретів у звичайному source file: оператор сам обирає, що надсилати Claude.
 
+Paginated `content` містить лише immutable request/snapshot/binding. Поточні `state`/`cancel_request` повертаються окремими полями, тому cancellation не зміщує offsets у JSON, який Claude збирає зі сторінок.
+
 Review result має examined/skipped coverage усього manifest. `no_findings` вимагає повного examined scope без findings/skips. Перед використанням Codex викликає `check_snapshot`; зміна hashes чи Git head скасовує applicability старого висновку. Findings не є гарантією correctness; limitations і фактичні тести залишаються окремими. Parent chain обмежений трьома задачами.
 
 ## Desktop callback
 
-Результат доступний через MCP `wait_for_task`, `task_status`, `task_result` у поточному workflow. Автоматичне пробудження вихідного Desktop chat після закінчення turn не реалізоване. Наявність `codex queue` 0.160.0 підтверджена, але адресація саме живого Desktop chat не перевірена. App Server/private sockets/clipboard не використовуються як прихований fallback.
+Результат доступний через MCP `wait_for_task`, `task_status`, `task_result` у поточному workflow. Автоматичне пробудження вихідного Desktop chat після закінчення turn не реалізоване. `codex queue` 0.160.0 прийняв probe з exact Desktop thread ID, але receipt не підтвердив actual delivery/new turn. App Server/private sockets/clipboard не використовуються як прихований fallback.

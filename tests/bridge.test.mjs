@@ -161,6 +161,8 @@ test("cooperative cancellation, bounded wait and late result", async (t) => {
   const late = await b.call("codex", "task_result", { task_id: r.task_id });
   assert.equal(late.state, "cancel_requested");
   assert.equal(late.result_receipt.late, true);
+  assert.equal(late.result, null);
+  assert.equal(late.late_result.architecture, architecture.architecture);
   await b.call("claude", "acknowledge_cancel", a);
   assert.equal(
     (await b.call("codex", "task_status", { task_id: r.task_id })).state,

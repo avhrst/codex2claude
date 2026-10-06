@@ -13,7 +13,7 @@ cd /Users/oleksii/Code/codex2claude
 npm ci --ignore-scripts
 npm run build
 node dist/cli.js init
-node dist/cli.js prepare-codex
+node dist/cli.js prepare-codex --direct-mcp
 node dist/cli.js broker
 ```
 
@@ -28,7 +28,11 @@ node dist/cli.js claude-session
 
 Плагін генерується в ignored `.codex2claude/plugin`, з абсолютними runtime paths поточного host. Його skills/templates — у [plugin](plugin). Native MCP config — `.codex2claude/claude.mcp.json`. Pairing та source snapshots залишаються локальними private files, не комітяться.
 
-Для підключення плагіна до Desktop див. [setup](docs/setup.md). CLI installation змінює user plugin configuration, тому це окрема явна дія користувача. `prepare-codex` лише створює repo catalog.
+`prepare-codex --direct-mcp` створює project-scoped `.codex/config.toml` із точними runtime paths, без глобальних змін. Чужий config не перезаписує. Після refresh MCP/new chat треба перевірити фактичний native `codex2claude.bridge_status` tool call у Desktop. Згенерований config локальний та ignored; він діє лише для trusted project.
+
+Після зміни Node runtime виконати `init` та `prepare-codex --refresh-direct-mcp`: команда оновлює лише config точного generated формату; user additions зберігає як conflict.
+
+Для встановлення повного плагіна зі skills див. [setup](docs/setup.md). CLI installation змінює user plugin configuration, тому це окрема явна дія користувача. Використовуй один спосіб підключення MCP: direct project config або installed plugin.
 
 ```sh
 node dist/cli.js doctor
@@ -43,9 +47,13 @@ npm test
 
 Architecture/review за замовчуванням не дозволяють Claude змінювати файли чи виконувати тести. Prompt не є sandbox, native permissions зберігаються. Неточна доставка потребує явного reconciliation; `cancel_requested` не означає примусову зупинку.
 
+CLI також підтримує `request architecture|review --input request.json`, `wait --task ID`, `cancel --task ID --reason MESSAGE` та `check --task ID`. JSON request містить унікальний `idempotency_key`, `goal`, явні `files`; для review також `scope`. Отриманий receipt ще не є результатом Claude.
+
+Якщо прийнята задача втратила native сесію, вона лишається `needs_human` без повтору. Оператор після особистого підтвердження закриття сесії може виконати `resolve-stopped`; точний порядок — у [setup](docs/setup.md#reconnect-та-контроль).
+
 - [Архітектура й межі MVP](docs/architecture.md)
 - [Підписка та permissions](docs/subscription-boundary.md)
 - [Capability gate](docs/capability-gate.md)
 - [Handoff і незмінні вимоги](CODEX_HANDOFF.md)
 
-Код під MIT. Публікації npm, commit і push цим запуском не виконуються.
+Код під MIT. Репозиторій збережено в Git та pushed за явною інструкцією користувача; npm package підготовлено локально, publish не виконано.

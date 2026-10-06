@@ -11,7 +11,7 @@ export function canonical(value: unknown): string {
       "{" +
       Object.entries(value)
         .filter(([, v]) => v !== undefined)
-        .sort(([a], [b]) => a.localeCompare(b))
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
         .map(([k, v]) => JSON.stringify(k) + ":" + canonical(v))
         .join(",") +
       "}"
@@ -147,6 +147,8 @@ export interface Task {
   cancelRequest?: { at: string; reason: string };
   humanAction?: string;
   cancelNotified?: string;
+  progress?: { at: string; message: string };
+  operatorStopped?: { at: string; lease: string; reason: string };
   events: { at: string; state: State; detail: string }[];
 }
 export interface Participant {
