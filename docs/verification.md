@@ -20,14 +20,14 @@ Callback candidate містить 43 файли, включно з `dist/callbac
 
 Користувач особисто підтвердив development-channel запуск у Terminal. CLI 2.1.291 працював зі звичайним claude.ai login (Max), без API/Agent SDK/keys. Bridge не читав auth stores. Native nonce tool call довів приймання channel event, а task acceptance/result — модельну відповідь.
 
-| Задача | Task ID | Snapshot | Реальний результат |
-|---|---|---|---|
-| Architecture | `b2b3ef4d-921f-4364-bfa9-8c7bebf09729` | `74b7c407d94e…` | completed, власна структурована відповідь Claude, late=false |
-| Review контрольного багу | `157872c9-45b0-4fd5-af15-f5c6c57517a0` | `602694e7fc82…` | completed, 2 findings, changes_requested |
-| Review виправлення | `417aa75c-0b54-4936-a938-75929d957a2e` | `fabac9a8b266…` | completed, повний examined scope, no_findings, late=false |
-| Review надійності | `599703be-cd4c-4255-887b-95f8b185408c` | `a436e75291d6…` | completed, 6 static findings, changes_requested, late=false |
+| Задача                     | Task ID                                | Snapshot        | Реальний результат                                                                       |
+| -------------------------- | -------------------------------------- | --------------- | ---------------------------------------------------------------------------------------- |
+| Architecture               | `b2b3ef4d-921f-4364-bfa9-8c7bebf09729` | `74b7c407d94e…` | completed, власна структурована відповідь Claude, late=false                             |
+| Review контрольного багу   | `157872c9-45b0-4fd5-af15-f5c6c57517a0` | `602694e7fc82…` | completed, 2 findings, changes_requested                                                 |
+| Review виправлення         | `417aa75c-0b54-4936-a938-75929d957a2e` | `fabac9a8b266…` | completed, повний examined scope, no_findings, late=false                                |
+| Review надійності          | `599703be-cd4c-4255-887b-95f8b185408c` | `a436e75291d6…` | completed, 6 static findings, changes_requested, late=false                              |
 | Повторне review надійності | `b76e933c-b91e-43fc-b3cb-e2e397487fe9` | `aaa6c3f3ec32…` | completed, попередні 6 findings закриті/прийняті, 1 low runtime-path finding, late=false |
-| Фінальне scoped review | `39eacc51-2a62-4efa-97e1-398c8efe1bac` | `fc9e1865a8c4…` | completed, 6 examined files, no_findings, late=false |
+| Фінальне scoped review     | `39eacc51-2a62-4efa-97e1-398c8efe1bac` | `fc9e1865a8c4…` | completed, 6 examined files, no_findings, late=false                                     |
 
 На момент spike після виправлення старий review мав `check_snapshot.matches=false`; новий — true. Подальший initial commit змінив Git HEAD: ці історичні checks не є поточним approval для нового HEAD. Claude не запускав fixture, зробив static review; Codex окремо перевірив поведінку. Limitations Claude містять floating-point rounding та відсутність native test execution.
 
@@ -41,11 +41,11 @@ Native review надійності знайшов terminal-state regression пр
 
 Raw receipts та власна відповідь Claude доступні у private `.codex2claude/evidence/*.json`, не включаються в Git/npm. Цей файл зберігає лише synthetic IDs і стислий висновок. Історичні receipts мають runtime першого spike; після оновлення adapter native session слід перезапустити, якщо змінено adapter поведінку.
 
-## Desktop та межі підтвердження
+## Desktop та межі підтвердження — 6 жовтня 2026
 
-Запити координував Codex Desktop, але для цього spike він запускав через shell real MCP client (`scripts/live-spike.mjs`), який викликав Codex adapter. **Це ще не доказ установленого Desktop plugin tool loading.** Підготовлений package/catalog не дорівнює installed plugin. User plugin configuration не змінюється без окремої авторизації.
+Запити координував Codex Desktop, але для цього spike він запускав через shell real MCP client (`scripts/live-spike.mjs`), який викликав Codex adapter. **Цей spike не доводив Desktop plugin tool loading.** Підготовлений package/catalog не дорівнює installed plugin. User plugin configuration не змінюється без окремої авторизації.
 
-Після initial commit створено repo-only `.codex/config.toml` через `prepare-codex --direct-mcp`. `codex mcp list --json` підтвердив enabled STDIO server із правильними absolute command/args/cwd і timeout. Native Desktop tool loading у цьому active chat ще не з'явилось; refresh/new turn треба перевіряти окремо. Direct config і full plugin MCP одночасно не вмикати.
+Після initial commit створено repo-only `.codex/config.toml` через `prepare-codex --direct-mcp`. `codex mcp list --json` підтвердив enabled STDIO server із правильними absolute command/args/cwd і timeout. Native Desktop tool loading у turn 6 жовтня ще не з'явилось; refresh/new turn треба перевіряти окремо. Direct config і full plugin MCP одночасно не вмикати.
 
 Standalone `codex queue` probe `c2c-20261006-desktop-1` для exact thread `01a11019-11c7-70a0-b4aa-eb87a6d2ecd3` повернув exit 0, receipt `01a11036-ecf0-7503-bc7b-ab9bdc7c8b71`. 08:36 UTC exact повідомлення фактично надійшло в цей Desktop чат після завершення попереднього turn й запустило наступний. Private receipt: `.codex2claude/evidence/desktop-callback-probe.json`. Це proof supported CLI addressing/new turn, а не proof native MCP tool loading.
 
@@ -55,6 +55,16 @@ Parent-bound native rereview `b8b78ee7-3b73-4a22-8c56-2cdd565c7e7b` заверш
 
 Третє фінальне scoped review `9e855d93-885b-439f-bc19-6cae0858123d` отримало snapshot `e417e35ac946…` п'яти змінених файлів, 32 tests validation, без додаткової callback notification. Native result: completed, late=false, усі п'ять файлів examined, вісім context pages, no_findings. Перед commit check_snapshot.matches=true; src/adapters.ts, tests/bridge.test.mjs і AGENTS.md побайтово збігаються з parent reviewed snapshot. Secure callback task b8b78ee7 тепер delivered після actual incoming acknowledgment. На момент доставки check_snapshot.matches=false: після review були repairs і commit, тому старий review не застосовувався як approval поточного HEAD. Це не перешкоджає підтвердженню доставки саме його immutable result. Старі exposed callback states лишаються historical і не блокують participant slot; окремий manual callback reconcile не реалізований. Їх не можна позначати delivered на підставі store або queued receipt. Failure/expired/cancel/late notifications і callback retries у MVP не реалізовані; manual resume/status зберігається.
 
-**Підтверджений completion callback cycle:** native Claude submit_result → durable broker result → supported CLI queue → exact original Desktop chat/new turn → verified CLI acknowledge_callback → delivered. Private evidence: `.codex2claude/evidence/secure-callback-arrival.json` містить correlation, queue receipt, received/delivered timestamps, result verification і stale snapshot check, без raw nonce. Temporary acknowledgment JSON видалено. Native Desktop MCP tools у цьому turn досі не доступні; CLI acknowledgment після actual arrival не є proof plugin/MCP tool loading.
+**Підтверджений completion callback cycle:** native Claude submit_result → durable broker result → supported CLI queue → exact original Desktop chat/new turn → verified CLI acknowledge_callback → delivered. Private evidence: `.codex2claude/evidence/secure-callback-arrival.json` містить correlation, queue receipt, received/delivered timestamps, result verification і stale snapshot check, без raw nonce. Temporary acknowledgment JSON видалено. Native Desktop MCP tools у turn 6 жовтня не були доступні; CLI acknowledgment після actual arrival не є proof plugin/MCP tool loading.
+
+## Підключення — 8 жовтня 2026
+
+За явною інструкцією користувача зареєстровано local marketplace і встановлено `codex2claude@codex2claude-dev`, version `0.1.0-alpha.1`. CLI `plugin list` повернув installed=true, enabled=true. Обидва manifests, MCP configs і дві skills у installed cache побайтово збігаються з generated plugin. Попередній direct MCP config звірено з точним generated template, збережено у private backup і вимкнено; сторонніх settings не змінено.
+
+У поточному Desktop чаті доступні всі 10 native MCP tools. Фактичний `bridge_status` спершу повернув ECONNREFUSED через зупинений broker, після рестарту — правильний project/worktree/session binding. Через native `request_architecture` створено task `9690468b-0ae9-4650-9cb7-8c4e0735b71e`, snapshot `815b8dcd1104…`, зі challenge `c2c-native-20261008-8b4e`. Це справжні Desktop MCP виклики, без shell MCP client. Tools були доступні на початку turn з попереднім direct config; їх завантаження саме з нового installed plugin після refresh не підтверджене.
+
+Terminal launch native Claude dispatch успішний, але participant ще не підключився: ready=false, task queued, delivery_attempts=0. Development-channel/project trust/MCP consent, якщо Claude їх запитає, підтверджує користувач особисто. Цей стан не є native acceptance або новим завершеним round trip. Callback увімкнений для погодженого exact Desktop чату; acknowledgment можливий лише після фактичного incoming повідомлення.
+
+`npm run check` і всі 32 behavioral tests повторно пройшли на Node 25.9.0, Codex CLI 0.160.0, Claude Code 2.1.291. Private onboarding receipt: `.codex2claude/evidence/plugin-onboarding-20261008.json`. Raw bridge/task receipts і generated config не комітяться.
 
 Негативний offline-Claude test — synthetic participant; повністю закривати живу native сесію для такого тесту не виконувалось. Native organization-policy відмови та live cancellation не перевірено. Platform scope — цей macOS host; Windows named-pipe adapter і Linux packaging відсутні. Retention — локальний store без автоматичного видалення історії, один writer.
